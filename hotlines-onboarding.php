@@ -64,7 +64,7 @@ function hotlines_render_register_form() {
     return ob_get_clean();
 }
 
-functon() {
+function hotlines_handle_registration() {
     if (!isset($_POST['hotlines_register_nonce']) || !wp_verify_nonce($_POST['hotlines_register_nonce'], 'hotlines_register_action')) {
         return '<p>Security check failed.</p>';
     }
@@ -80,7 +80,7 @@ functon() {
     }
 
     if (email_exists($email)) {
-        r first.</p>';
+        return '<p>An account already exists with that email. Please log in first.</p>';
     }
 
     $code_post = hotlines_find_access_code($access_code);
@@ -105,7 +105,10 @@ functon() {
     ]);
 
     if (is_wp_error($user_id)) {
-        retue($user_id, $code_post->ID);
+        return '<p>Could not create user: ' . esc_html($user_id->get_error_message()) . '</p>';
+    }
+
+    hotlines_assign_groups_from_code($user_id, $code_post->ID);
 
     update_field('status', 'redeemed', $code_post->ID);
     update_field('redeemed_by', $user_id, $code_post->ID);
@@ -122,7 +125,19 @@ function hotlines_find_access_code($access_code) {
     $query = new WP_Query([
         'post_type'      => 'access-code',
         'post_status'    => 'publish',
-        'titleield('groups_to_grant', $code_post_id);
+        'title'          => $access_code,
+        'posts_per_page' => 1,
+    ]);
+
+    if (!$query->have_posts()) {
+        return false;
+    }
+
+    return $query->posts[0];
+}
+
+function hotlines_assign_groups_from_code($user_id, $code_post_id) {
+    $groups = get_field('groups_to_grant', $code_post_id);
 
     if (empty($groups)) {
         return;
@@ -136,19 +151,4 @@ function hotlines_find_access_code($access_code) {
             ]);
         }
     }
-}'          => $access_code,
-        'posts_per_page' => 1,
-    ]);
-
-    if (!$query->have_posts()) {
-        return false;
-    }
-
-    return $query->posts[0];
 }
-
-function hotlines_assign_groups_from_code($user_id, $code_post_id) {
-    $groups = get_frn '<p>Could not create user: ' . esc_html($user_id->get_error_message()) . '</p>';
-    }
-
-    hotlines_assign_groups_from_codeturn '<p>An account already exists with that email. Please log inion hotlines_handle_registrati
