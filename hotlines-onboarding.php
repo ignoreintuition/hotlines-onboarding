@@ -1,8 +1,9 @@
 <?php
 /**
- * Plugin Name: HotLines Onboarding
- * Description: Registers HotLines users and redeems access codes.
- * Version: 0.6.0
+ * Plugin Name: PyroPaths Onboarding
+ * Description: Registers PyroPaths products and grants tutorial and template access.
+ * Version: 0.7.0
+ * Requires PHP: 7.4
  */
 
 if (!defined('ABSPATH')) {
@@ -30,12 +31,14 @@ define('HOTLINES_STATUS_REDEEMED', 'Redeemed');
  * yellow => Yellow Tier, ID 2
  * orange => Orange Tier, ID 3
  * red    => Red Tier, ID 4
+ * mushroom_kit => Mushroom Kit, ID 5 (legacy codes)
  */
 function hotlines_group_id_map() {
     return [
         'yellow' => 2,
         'orange' => 3,
         'red'    => 4,
+        'mushroom_kit' => 5,
     ];
 }
 
@@ -52,13 +55,7 @@ add_shortcode('hotlines_register', 'hotlines_render_register_form');
  * Logged-in users see the access-code-only form.
  */
 function hotlines_render_register_form() {
-    $message = '';
-
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hotlines_register_nonce'])) {
-        $message = is_user_logged_in()
-            ? hotlines_handle_existing_user_redemption()
-            : hotlines_handle_new_user_registration();
-    }
+    $message = $GLOBALS['pyropaths_registration_message'] ?? '';
 
     return is_user_logged_in()
         ? hotlines_render_code_only_form($message)
@@ -156,10 +153,10 @@ function hotlines_handle_new_user_registration() {
         return hotlines_error_message('Security check failed.');
     }
 
-    $first_name = sanitize_text_field($_POST['first_name'] ?? '');
-    $last_name  = sanitize_text_field($_POST['last_name'] ?? '');
-    $email      = sanitize_email($_POST['email'] ?? '');
-    $password   = $_POST['password'] ?? '';
+    $first_name = sanitize_text_field(pyropaths_request('first_name'));
+    $last_name  = sanitize_text_field(pyropaths_request('last_name'));
+    $email      = sanitize_email(pyropaths_request('email'));
+    $password   = pyropaths_request('password');
 
     if (empty($first_name) || empty($last_name) || empty($email) || empty($password)) {
         return hotlines_error_message('Please complete all required fields.');
@@ -183,6 +180,11 @@ function hotlines_handle_new_user_registration() {
         return hotlines_error_message($code_post->get_error_message());
     }
 
+    $plan = pyropaths_code_plan($code_post->ID);
+    if (is_wp_error($plan)) {
+        return hotlines_error_message($plan->get_error_message());
+    }
+
     $user_id = wp_insert_user([
         'user_login' => $email,
         'user_email' => $email,
@@ -199,13 +201,15 @@ function hotlines_handle_new_user_registration() {
     $redeem_result = hotlines_redeem_code_for_user($user_id, $code_post->ID);
 
     if (is_wp_error($redeem_result)) {
+        require_once ABSPATH . 'wp-admin/includes/user.php';
+        wp_delete_user($user_id);
         return hotlines_error_message($redeem_result->get_error_message());
     }
 
     wp_set_current_user($user_id);
     wp_set_auth_cookie($user_id);
 
-    wp_safe_redirect(site_url('/learn'));
+    wp_safe_redirect(pyropaths_account_url());
     exit;
 }
 
@@ -243,7 +247,7 @@ function hotlines_handle_existing_user_redemption() {
  */
 function hotlines_verify_nonce() {
     return isset($_POST['hotlines_register_nonce'])
-        && wp_verify_nonce($_POST['hotlines_register_nonce'], 'hotlines_register_action');
+        && wp_verify_nonce(pyropaths_request('hotlines_register_nonce'), 'hotlines_register_action');
 }
 
 /**
@@ -254,7 +258,7 @@ function hotlines_verify_nonce() {
  * - WP_Error when the code is missing, unavailable, or already redeemed.
  */
 function hotlines_validate_access_code_from_request() {
-    $access_code = strtolower(trim(sanitize_text_field($_POST['access_code'] ?? '')));
+    $access_code = strtolower(trim(sanitize_text_field(pyropaths_request('access_code'))));
 
     if (empty($access_code)) {
         return new WP_Error('missing_code', 'Please enter an access code.');
@@ -286,7 +290,7 @@ function hotlines_find_access_code($access_code) {
     $query = new WP_Query([
         'post_type'      => HOTLINES_ACCESS_CODE_POST_TYPE,
         'post_status'    => 'publish',
-        'posts_per_page' => 1,
+        'posts_per_page' => 2,
         'meta_query'     => [
             [
                 'key'     => HOTLINES_FIELD_ACCESS_CODE,
@@ -296,67 +300,28 @@ function hotlines_find_access_code($access_code) {
         ],
     ]);
 
-    return $query->have_posts() ? $query->posts[0] : false;
+    return count($query->posts) === 1 ? $query->posts[0] : false;
 }
 
 /**
  * Assign user to Groups and mark the access code as redeemed.
  */
 function hotlines_redeem_code_for_user($user_id, $code_post_id) {
-    $group_result = hotlines_assign_groups_from_code($user_id, $code_post_id);
-
-    if (is_wp_error($group_result)) {
-        return $group_result;
-    }
-
-    update_field(HOTLINES_FIELD_STATUS, HOTLINES_STATUS_REDEEMED, $code_post_id);
-    update_field(HOTLINES_FIELD_REDEEMED_BY, $user_id, $code_post_id);
-    update_field(HOTLINES_FIELD_REDEEMED_AT, current_time('mysql'), $code_post_id);
-
-    return true;
+    return pyropaths_redeem($user_id, $code_post_id);
 }
 
-/**
- * Assign the user to the Groups selected on the access-code post.
- *
- * The ACF checkbox stores values like:
- * - yellow
- * - orange
- * - red
- *
- * Those values are mapped to the numeric Groups IDs in hotlines_group_id_map().
- */
+/** Legacy callable retained; full redemption must use the locked controller. */
 function hotlines_assign_groups_from_code($user_id, $code_post_id) {
-    if (!function_exists('get_field')) {
-        return new WP_Error('acf_missing', 'ACF is unavailable.');
+    $plan = pyropaths_code_plan($code_post_id);
+    if (is_wp_error($plan)) {
+        return $plan;
     }
-
-    if (!class_exists('Groups_User_Group')) {
-        return new WP_Error('groups_missing', 'Groups plugin classes are unavailable.');
-    }
-
-    $groups = get_field(HOTLINES_FIELD_GROUPS_TO_GRANT, $code_post_id);
-
-    if (empty($groups)) {
-        return new WP_Error('no_groups', 'No groups were selected on this access code.');
-    }
-
-    $group_id_map = hotlines_group_id_map();
-
-    foreach ($groups as $group_value) {
-        if (!isset($group_id_map[$group_value])) {
-            return new WP_Error(
-                'bad_group_value',
-                'Unknown group value: ' . print_r($group_value, true)
-            );
+    foreach ($plan['groups'] as $group_id) {
+        if (!Groups_User_Group::read($user_id, $group_id)
+            && !Groups_User_Group::create(['user_id' => $user_id, 'group_id' => $group_id])) {
+            return new WP_Error('group_failed', 'Access could not be assigned. Please try again.');
         }
-
-        Groups_User_Group::create([
-            'user_id'  => (int) $user_id,
-            'group_id' => (int) $group_id_map[$group_value],
-        ]);
     }
-
     return true;
 }
 
@@ -384,3 +349,6 @@ function hotlines_error_message_with_link($message, $link_text, $url) {
 function hotlines_success_message($message) {
     return '<p class="hotlines-message hotlines-success">' . esc_html($message) . '</p>';
 }
+
+require_once __DIR__ . '/includes/access.php';
+require_once __DIR__ . '/includes/admin.php';

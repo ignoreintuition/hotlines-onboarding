@@ -1,23 +1,15 @@
 #!/bin/bash
-
-set -e
-
+set -euo pipefail
+cd "$(dirname "$0")"
 PLUGIN_NAME="hotlines-onboarding"
-
-rm -rf build
+# Package runtime files only; never ship site exports, tests, or local context.
 mkdir -p build
-
-rsync -av \
-  --exclude='.git' \
-  --exclude='.github' \
-  --exclude='.gitignore' \
-  --exclude='build' \
-  --exclude='.DS_Store' \
-  --exclude='.vscode' \
-  --exclude='.idea' \
-  ./ "build/$PLUGIN_NAME"
-
-cd build
-zip -r "${PLUGIN_NAME}.zip" "$PLUGIN_NAME"
-
-echo "Created build/${PLUGIN_NAME}.zip"
+STAGING_DIR=$(mktemp -d)
+trap 'rm -rf "$STAGING_DIR"' EXIT
+mkdir -p "$STAGING_DIR/$PLUGIN_NAME/includes"
+cp hotlines-onboarding.php "$STAGING_DIR/$PLUGIN_NAME/"
+cp includes/*.php "$STAGING_DIR/$PLUGIN_NAME/includes/"
+cp docs/SETUP.md "$STAGING_DIR/$PLUGIN_NAME/README.md"
+(cd "$STAGING_DIR" && zip -qr "$PLUGIN_NAME.zip" "$PLUGIN_NAME")
+mv "$STAGING_DIR/$PLUGIN_NAME.zip" "build/$PLUGIN_NAME.zip"
+echo "Created build/$PLUGIN_NAME.zip"
